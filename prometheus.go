@@ -60,8 +60,9 @@ func (c *StatCollector) Describe(ch chan<- *prometheus.Desc) {
 func (c *StatCollector) Collect(ch chan<- prometheus.Metric) {
 	ch <- prometheus.MustNewConstMetric(c.descRestarts, prometheus.CounterValue, float64(atomic.LoadInt32(&c.stat.Restarts)))
 	ch <- prometheus.MustNewConstMetric(c.descCrashes, prometheus.CounterValue, float64(atomic.LoadInt32(&c.stat.Crashes)))
+	status := atomic.LoadInt32(&c.stat.Status)
 	for k, v := range statusNames {
-		if k == atomic.LoadInt32(&c.stat.Status) {
+		if k == status {
 			ch <- prometheus.MustNewConstMetric(c.descStatus, prometheus.GaugeValue, 1.0, v)
 		} else {
 			ch <- prometheus.MustNewConstMetric(c.descStatus, prometheus.GaugeValue, 0.0, v)

@@ -149,12 +149,11 @@ func TestThreadRedefineContext(t *testing.T) {
 	defer thread.Terminate()
 
 	time.Sleep(time.Millisecond * 500)
-	<-thread.Stop()
-	before := count
-
 	ctx02, cancel02 := context.WithTimeout(context.Background(), time.Second)
 	defer cancel02()
-	thread.WithContext(ctx02).Run()
+	thread.WithContext(ctx02)
+	before := count
+	thread.Run()
 
 	<-thread.Wait()
 
@@ -162,5 +161,37 @@ func TestThreadRedefineContext(t *testing.T) {
 		t.Errorf("worker was not executed!")
 	} else if count == before {
 		t.Errorf("worker was not started after stop!")
+	}
+}
+
+func TestThreadRunRun(t *testing.T) {
+	count := 0
+	worker := func(ctx context.Context) {
+		count++
+		select {
+		case <-ctx.Done():
+		case <-time.After(time.Second * 10):
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	config := ThreadConf{Restart: -1, RestartDelay: time.Millisecond * 100}
+	thread := NewThread(config, worker).
+		WithContext(ctx).
+		WithCollector("test").
+		Run()
+	defer thread.Terminate()
+
+	time.Sleep(time.Millisecond * 500)
+	thread.Run()
+
+	<-thread.Wait()
+
+	if count == 0 {
+		t.Errorf("worker was not executed!")
+	} else if count > 1 {
+		t.Errorf("worker was executed %d-times. expected: 1", count)
 	}
 }

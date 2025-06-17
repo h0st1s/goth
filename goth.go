@@ -62,6 +62,9 @@ func (t *Thread) WithContext(ctx context.Context) *Thread {
 	if t.cancel != nil {
 		t.cancel()
 	}
+	if t.stop != nil {
+		<-t.stop
+	}
 	t.ctx = ctx
 	return t
 }
@@ -111,6 +114,13 @@ func (t *Thread) Terminate() {
 
 // Runs thread loop.
 func (t *Thread) Run() *Thread {
+	if t.stop != nil {
+		select {
+		case <-t.stop:
+		default:
+			return t
+		}
+	}
 	t.stop = make(chan struct{}, 1)
 	t.fuse, t.cancel = context.WithCancel(t.ctx)
 	go t.loop()
