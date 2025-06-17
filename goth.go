@@ -19,8 +19,14 @@ const (
 
 type ThreadFunc func(ctx context.Context)
 
+// Thread configuration
 type ThreadConf struct {
-	Restart      int32         `json:"restart"`
+	// Number of process restarts
+	//  -1 -- infinite restart
+	//   0 -- execute once
+	//   n -- execute and then restart n-times
+	Restart int32 `json:"restart"`
+	// Delay before process restarting
 	RestartDelay time.Duration `json:"restart_delay"`
 }
 
@@ -31,20 +37,19 @@ type ThreadStat struct {
 }
 
 type Thread struct {
-	ctx  context.Context
-	cls  context.CancelFunc
-	stop chan struct{}
-	conf ThreadConf
-	stat ThreadStat
-	fn   ThreadFunc
-	clct *StatCollector
+	ctx    context.Context
+	fuse   context.Context
+	cancel context.CancelFunc
+	stop   chan struct{}
+	conf   ThreadConf
+	stat   ThreadStat
+	fn     ThreadFunc
+	clct   *StatCollector
 }
 
 func NewThread(conf ThreadConf, fn ThreadFunc) *Thread {
-	ctx, cls := context.WithCancel(context.Background())
 	return &Thread{
-		ctx:  ctx,
-		cls:  cls,
+		ctx:  context.Background(),
 		stop: nil,
 		conf: conf,
 		stat: ThreadStat{},
@@ -54,32 +59,36 @@ func NewThread(conf ThreadConf, fn ThreadFunc) *Thread {
 }
 
 func (t *Thread) WithContext(ctx context.Context) *Thread {
-	t.cls()
-	t.ctx, t.cls = context.WithCancel(ctx)
+	if t.cancel != nil {
+		t.cancel()
+	}
+	t.ctx = ctx
 	return t
 }
 
-// creates prometheus metric collector and register it.
-// panics in case of error.
-// watch for label uniqueness!
+// Creates prometheus metric collector and register it.
+// Panics in case of error.
+// Watch for label uniqueness!
 func (t *Thread) WithCollector(label string) *Thread {
 	t.clct = NewStatCollector(label, &t.stat)
 	prometheus.MustRegister(t.clct)
 	return t
 }
 
-// signals thread to stop.
+// Signals thread to stop.
 func (t *Thread) Stop() <-chan struct{} {
-	t.cls()
+	if t.cancel != nil {
+		t.cancel()
+	}
 	return t.stop
 }
 
-// waiting for stop.
+// Waiting for stop.
 func (t *Thread) Wait() <-chan struct{} {
 	return t.stop
 }
 
-// cleanup
+// Cleanup.
 func (t *Thread) cleanup() {
 	// unregister prometheus collector
 	if t.clct != nil {
@@ -89,27 +98,31 @@ func (t *Thread) cleanup() {
 	}
 }
 
-// terminates thread and cleans up all referenced objects.
+// Terminates thread and cleans up all referenced objects.
 func (t *Thread) Terminate() {
-	t.cls()
-	<-t.stop
+	if t.cancel != nil {
+		t.cancel()
+	}
+	if t.stop != nil {
+		<-t.stop
+	}
 	t.cleanup()
 }
 
-// run thread loop
+// Runs thread loop.
 func (t *Thread) Run() *Thread {
+	t.stop = make(chan struct{}, 1)
+	t.fuse, t.cancel = context.WithCancel(t.ctx)
 	go t.loop()
 	return t
 }
 
-// thread loop
 func (t *Thread) loop() {
-	t.stop = make(chan struct{}, 1)
 	defer close(t.stop)
 	for {
 		// check context
 		select {
-		case <-t.ctx.Done():
+		case <-t.fuse.Done():
 			return
 		default:
 		}
@@ -133,14 +146,14 @@ func (t *Thread) execute() {
 			atomic.StoreInt32(&t.stat.Status, statusStopped)
 		}
 	}()
-	t.fn(t.ctx)
+	t.fn(t.fuse)
 }
 
 func (t *Thread) restart() bool {
 	// restart?
 	switch {
 	case t.conf.Restart == 0:
-		fallthrough
+		return false
 	case t.conf.Restart > 0 && t.stat.Restarts >= t.conf.Restart:
 		return false
 	}
@@ -148,13 +161,13 @@ func (t *Thread) restart() bool {
 	if t.conf.RestartDelay > 0 {
 		atomic.StoreInt32(&t.stat.Status, statusWaiting)
 		select {
-		case <-t.ctx.Done():
+		case <-t.fuse.Done():
 			return false
 		case <-time.After(t.conf.RestartDelay):
 		}
 	} else {
 		select {
-		case <-t.ctx.Done():
+		case <-t.fuse.Done():
 			return false
 		default:
 		}
